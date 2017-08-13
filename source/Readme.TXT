@@ -1,13 +1,27 @@
 RiverSimulator, V0.91, 26 Feb 2009, (c) by Filip Strugar (filip.strugar@gmail.com)
 
 ******************************************************************************************************
-** Project content and source code files are distributed under Zlib license.                        **
-**
-** Software is used on 'as-is' basis. Authors are not liable for any damages arising from its use.
-** The distribution of a modified version of the software is subject to the following restrictions:
-**   1. The authorship of the original software must not be misrepresented,
-**   2. Altered source versions must not be misrepresented as being the original software, and
-**   3. The license notice must not be removed from source distributions.
+MIT License
+
+Copyright (c) 2010 Filip Strugar
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ******************************************************************************************************
 
 Requirements: 
