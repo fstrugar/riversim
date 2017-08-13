@@ -1,0 +1,255 @@
+
+
+#include "wsCommon.sh"
+
+float2         g_samplerPixelSize;
+float2         g_samplerSize;
+
+sampler        g_inputTexture;
+
+sampler        g_noiseTexture;
+
+float3         g_worldSpaceInfo;    // .x == pixelSizeX, .y == pixelSizeY, .z == heightUnitScale // worldSizeX, worldSizeY, worldSizeZ
+
+float3 calcNormalMap( float2 uv, float2 pixelSize )
+{
+   // Sobel 3x3
+	//    0,0 | 1,0 | 2,0
+	//    ----+-----+----
+	//    0,1 | 1,1 | 2,1
+	//    ----+-----+----
+	//    0,2 | 1,2 | 2,2
+
+	float2 uv00 = uv + float2( -pixelSize.x,   -pixelSize.y );
+	float2 uv10 = uv + float2(  0.0,           -pixelSize.y );
+	float2 uv20 = uv + float2(  pixelSize.x,   -pixelSize.y );
+
+	float2 uv01 = uv + float2( -pixelSize.x,   0.0          );
+	float2 uv21 = uv + float2(  pixelSize.x,   0.0          );
+
+	float2 uv02 = uv + float2( -pixelSize.x,   pixelSize.y );
+	float2 uv12 = uv + float2(          0.0,   pixelSize.y );
+	float2 uv22 = uv + float2(  pixelSize.x,   pixelSize.y );
+
+   float h00 = tex2D( g_inputTexture, uv00 ).x;
+   float h10 = tex2D( g_inputTexture, uv10 ).x;
+   float h20 = tex2D( g_inputTexture, uv20 ).x;
+   float h01 = tex2D( g_inputTexture, uv01 ).x;
+   float h21 = tex2D( g_inputTexture, uv21 ).x;
+   float h02 = tex2D( g_inputTexture, uv02 ).x;
+   float h12 = tex2D( g_inputTexture, uv12 ).x;
+   float h22 = tex2D( g_inputTexture, uv22 ).x;
+   
+	// The Sobel X kernel is:
+	//
+	// [ 1.0  0.0  -1.0 ]
+	// [ 2.0  0.0  -2.0 ]
+	// [ 1.0  0.0  -1.0 ]
+	
+	float Gx = h00 - h20 + 2.0 * h01 - 2.0 * h21 + h02 - h22;
+				
+	// The Sobel Y kernel is:
+	//
+	// [  1.0    2.0    1.0 ]
+	// [  0.0    0.0    0.0 ]
+	// [ -1.0   -2.0   -1.0 ]
+	
+	float Gy = h00 + 2.0 * h10 + h20 - h02 - 2.0 * h12 - h22;
+	
+	// The 0.5f leading coefficient can be used to control
+	// how pronounced the bumps are - less than 1.0 enhances
+	// and greater than 1.0 smoothes.
+	
+	//return float4( 0, 0, 0, 0 );
+	
+   float stepX = g_worldSpaceInfo.x;
+   float stepY = g_worldSpaceInfo.y;
+   float sizeZ = g_worldSpaceInfo.z;
+
+	Gx = Gx * stepY * sizeZ;
+	Gy = Gy * stepX * sizeZ;
+	
+	float Gz = stepX * stepY * 8;
+	
+   return normalize( float3( Gx, Gy, Gz ) );
+}
+
+float4 calculateNormalMap( float4   position : POSITION, float2 tex0 : TEXCOORD0 ) : COLOR
+{
+   return float4( calcNormalMap( tex0, g_samplerPixelSize ), 1.0 );
+}
+
+float4 calculateNormalMapSpecOutputWithHeight( float4   position : POSITION, float2 tex0 : TEXCOORD0 ) : COLOR
+{
+   float hSampled = tex2D( g_inputTexture, tex0 );
+   //return float4( hSampled, hSampled, hSampled, 1.0 );
+   
+   float h = ( hSampled ) * g_worldSpaceInfo.x * g_worldSpaceInfo.y * g_worldSpaceInfo.z;
+   float3 normal = calcNormalMap( tex0, g_samplerPixelSize ) * 0.5 + float3(0.5, 0.5, 0.5);
+   return float4( normal.x, normal.y, hSampled, 1.0 );
+}
+
+sampler        g_terrainHeightmapTexture;
+sampler        g_terrainNormalmapTexture;
+sampler        g_waterHeightmapTexture;
+sampler        g_waterVelocitymapTexture;
+sampler        g_perlinNoise;
+
+bool hasWater( float2 texUV )
+{
+   //return tex2D( g_waterHeightmapTexture, texUV ) > tex2D( g_terrainHeightmapTexture, texUV );
+   float4 coord = float4( texUV.x, texUV.y, 0, 0 );
+   return tex2Dlod( g_waterHeightmapTexture, coord ) > tex2Dlod( g_terrainHeightmapTexture, coord );
+}
+
+// This is an hacky ad-hoc solution
+static const int waterDistance_maxDist = 5;
+float waterDistance( float2 texUV )
+{
+   if( hasWater( texUV ) )
+      return 0;
+
+   for( int i = 2; i <= waterDistance_maxDist; i++ )
+   {
+      int k = i * i;
+      
+      float2 distance = float2( i-1, i-1 ) * 2.5;
+      
+      float step = 3.1415 * 2.0 / (float)k;
+      for( int d = 0; d < k; d++ )
+      {
+         float angle = step * (float)d;
+         bool bHasWater = hasWater( texUV + float2( sin( angle ), cos( angle ) ) * distance * g_samplerPixelSize );
+         if( bHasWater ) 
+            return i-1;
+      }
+   }
+   
+   return (float)waterDistance_maxDist;
+}
+
+float3 sampleTerrainNormal( float2 texUV )
+{
+   float3 normal = tex2D( g_terrainNormalmapTexture, texUV );
+   normal.z = sqrt( 1 - normal.x * normal.x - normal.y * normal.y );
+   return normal;
+}
+
+float calcCurvature( float2 texUV )
+{
+   float2 texA    = texUV + float2( - g_samplerPixelSize.x * 1.5, - g_samplerPixelSize.y * 0.5 );
+   float2 texB    = texUV + float2( + g_samplerPixelSize.x * 0.5, - g_samplerPixelSize.y * 1.5 );
+   float2 texC    = texUV + float2( + g_samplerPixelSize.x * 1.5, + g_samplerPixelSize.y * 0.5 );
+   float2 texD    = texUV + float2( - g_samplerPixelSize.x * 0.5, + g_samplerPixelSize.y * 1.5 );
+   
+   float3 normA   = sampleTerrainNormal( texA );
+   float3 normB   = sampleTerrainNormal( texB );
+   float3 normC   = sampleTerrainNormal( texC );
+   float3 normD   = sampleTerrainNormal( texD );
+   
+   return 6 - dot( normA, normB ) - dot( normA, normC ) - dot( normA, normD ) - dot( normB, normC ) - dot( normB, normD ) - dot( normC, normD );
+
+   //float3 normalCenter = sampleTerrainNormal( texUV );
+}
+
+float4 calculateSplatMap( float4   position : POSITION, float2 tex0 : TEXCOORD0 ) : COLOR
+{
+   float theight = tex2D( g_terrainHeightmapTexture, tex0 );
+
+   float3 tnormal = sampleTerrainNormal( tex0 );
+   
+   float wheight = tex2D( g_waterHeightmapTexture, tex0 );
+   float2 wvelocity = tex2D( g_waterVelocitymapTexture, tex0 );
+   
+   float speed = sqrt( wvelocity.x*wvelocity.x + wvelocity.y*wvelocity.y );
+   
+   float depth = wheight - theight;
+   bool underWater = depth > 0;
+   
+   float4 noise = tex2D( g_perlinNoise, tex0 * 10 );
+   
+   float slope       = (1.0 - dot( float3( 0, 0, 1 ), tnormal ));
+   float curvature   = saturate( calcCurvature( tex0 ) * 20.0 + 0.4 ) * ( noise.w + 0.0 );
+   
+   float distFromWater = 1.0 - (waterDistance( tex0 ) / ((float)waterDistance_maxDist));
+   
+   float dryGround = noise.x * noise.y + theight * 0.5 + 0.2 - distFromWater * 0.7;
+   
+   float cliffRocks  = slope * 1.6;
+   float pebbleRocks = saturate( curvature );
+   
+   if( underWater )
+   {
+      cliffRocks  += saturate( depth * 30.0 ) * (noise.z * 0.7) + 0.2 + 5.0 * speed;
+      pebbleRocks += noise.w * 0.3 + saturate( 20.0 * speed ) * 0.4 - saturate( depth * 15.0 ) * 0.45;
+      pebbleRocks -= slope * 1.3;
+   }
+   else
+   {
+      pebbleRocks += saturate( (distFromWater - 0.45) * 2.0 ) * (noise.w + 0.15);
+      pebbleRocks -= cliffRocks * 1.5;
+   }
+   
+   return float4( dryGround,
+                  cliffRocks, 
+                  pebbleRocks, 
+                  0 );
+}
+
+
+static float4  waveHeights       = float4( 3.0, 2.2, 1.5, 1.0);
+static float4  waveSpeeds        = float4( -1.0, 1.0, 1.0, 1.0 );
+static float4  waveDirXs         = float4( 0.0, 1.0, 3.0, 5.0 );
+static float4  waveDirYs         = float4( 5.0, 6.0, 7.0, 8.0 );
+static float4  waveOffsetsX      = float4( 0.0, 0.3, 0.0, 0.5 );
+static float4  waveOffsetsY      = float4( 0.3, 0.0, 0.6, 0.0 );
+
+float    g_time;
+
+float calcWaveSet( float2 uv, float time )
+{
+   uv *= 2;
+   
+   float4 noisea   = tex2D( g_noiseTexture, uv*1.0 + float2(0.0, 0.0) ) * 2.0 - 1.0;
+   float4 noiseb   = tex2D( g_noiseTexture, uv*1.0 + float2(0.3, 0.7) ) * 2.0 - 1.0;
+   float4 noisec   = tex2D( g_noiseTexture, uv*25.0 + float2(0.0, 0.0) );
+   float4 noised   = tex2D( g_noiseTexture, uv*2.0 + float2(0.3, 0.7) );
+   
+   noisea = noisea * 0.1;
+   noiseb = noiseb * 0.1;
+   
+   float4 warp1Input = 3.14159265 * 2.0 * ((waveDirXs * (uv.x + waveOffsetsX.x + noisea)) + (waveDirYs * (uv.y + waveOffsetsX.y + noiseb)));
+   warp1Input += time * waveSpeeds;
+   float4 waves = sin( warp1Input );
+   
+   //waves = sign( waves ) * pow( abs( waves ), 1.8 );
+   
+   waves *= waveHeights;
+   
+   waves *= noised;
+   
+   return waves.x + waves.y + waves.z + waves.w;
+}
+
+float4 calculateDetailMap( FixedVertexOutput input ) : COLOR0
+{
+   float timeMultiplier = 3.14159265 * 2.0;
+   
+   const int octs = 3;
+   float hs[octs];
+   
+   // this could look much better....
+
+   hs[0] = 0.15 * calcWaveSet( float2( input.tex0.x, input.tex0.y ), g_time * 3.14159265 * 2.0 );
+   hs[1] = 0.04 * calcWaveSet( float2( input.tex0.x*2, input.tex0.y*2 ), g_time * 3.14159265 * 2.0 );
+   hs[2] = 0.025 * calcWaveSet( float2( input.tex0.x*3, input.tex0.y*3 ), -g_time * 3.14159265 * 6.0 );
+   //hs[3] = 0.01 * calcWaveSet( float2( input.tex0.x*5, input.tex0.y*5 ), -g_time * 3.14159265 * 9.0 );
+
+   float h = 0;
+   for( int i = 0; i < octs; i++ )
+      h += hs[i];
+      
+   h /= (float)octs;
+
+   return saturate( 0.5 + h );
+}

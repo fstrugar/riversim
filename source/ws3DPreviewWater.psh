@@ -1,0 +1,402 @@
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+float2            g_samplerPixelSize;
+
+//sampler        g_normalMapTexture;
+
+sampler           g_waterBackgroundTexture;
+sampler           g_waterVelocityTexture;
+sampler           g_waterDepthTexture;
+
+sampler           g_combinedHeightMapTexture;
+sampler           g_combinedHNormalMapTexture;
+
+float2            g_heightMapPixelSize;
+sampler           g_combinedFoamMapTexture;
+
+float             g_foamMapUVScale;
+sampler           g_foamMapTexture;
+
+static float      g_samplingWaveSimNormalInfluence = 0.0015;
+
+float             g_detailWaveUVScale;
+float             g_detailWaveLerpK;
+sampler           g_detailWaveA;
+sampler           g_detailWaveB;
+
+float             g_usingSkyCubemap;
+sampler           g_skyCubeMapTexture;
+
+float             g_timeLerpK;
+
+float             g_globalTime;
+
+float3            g_foamFakeFlowTime;
+float3            g_foamFakeFlowAlpha;
+
+float             g_detailWaveStrength;
+float3            g_detailWaveFakeFlowTime;
+float3            g_detailWaveFakeFlowAlpha;
+
+float4            g_debugColor;
+
+//float             g_detailMapUVMult;
+
+static float4     g_waterDiffuseColor  = float4( 0.05, 0.5, 1.0, 0.0 );
+
+float4            g_VPOS_2_ScreenUV;         // float4( 1 / RenderTarget.Width, 1 / RenderTarget.Height, - 0.5 / RenderTarget.Width, - 0.5 / RenderTarget.Height );
+
+//float3            g_camPos;
+
+float4x4          g_viewProjection;
+float4x4          g_view;
+float4x4          g_proj;
+
+
+float4 outputWaterDepth( PreviewVertexDepthOnlyOutput input ) : COLOR
+{
+   return float4( input.waterDepth, input.distFromCamera, 0, 0 );
+}
+
+float3 UnpackNormal(float2 normPacked)
+{
+   float3 norm = float3( normPacked.x * 2.0 - 1.0, normPacked.y * 2.0 - 1.0, 0 );
+   norm.z = sqrt( 1 - (norm.x * norm.x + norm.y * norm.y) );
+   return norm;
+}
+
+float sampleHeight( float2 uv )
+{
+   float2 samp = tex2D( g_combinedHeightMapTexture, uv );
+   return lerp( samp.y, samp.x, g_timeLerpK );
+}
+
+float sampleFoam( float2 uv )
+{
+   float2 samp = tex2D( g_combinedFoamMapTexture, uv );
+   //return samp.x;
+   return lerp( samp.y, samp.x, g_timeLerpK );
+}
+
+float3 sampleNormal( PreviewVertexOutput input )
+{
+#define CALCULATE_NORMALS_IN_PIXEL_SHADER (0)
+#if CALCULATE_NORMALS_IN_PIXEL_SHADER
+	float2 uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22;
+	computeSobel3x3Offsets( input.globalUV_cwmUV.zw, g_heightMapPixelSize, uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22 );
+	
+	float4 an, bn, ap, bp;
+	
+	sampleSobel3x3CombinedHeights( g_combinedHeightMapTexture, uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22, an, bn, g_timeLerpK );
+	
+	an *= c_combinedHeightmapPrecisionMod;
+	bn *= c_combinedHeightmapPrecisionMod;
+
+   float3 normal = computeSobel3x3Normal( an, bn, 0.8 );
+#else
+   float4 cnorm = tex2D( g_combinedHNormalMapTexture, input.globalUV_cwmUV.zw );
+   cnorm.xy = lerp( cnorm.zw, cnorm.xy, g_timeLerpK );   // time-lerp
+   cnorm.xy = cnorm.xy * 2 - float2( 1.0, 1.0 );         // unpack
+   float3 normal = float3( cnorm.x, cnorm.y, sqrt( 1 - (cnorm.x*cnorm.x + cnorm.y*cnorm.y) ) );
+#endif
+	
+	return normal;
+}
+
+float calculateFoam( PreviewVertexOutput input, float amountOfFoam, float2 waterVelocity, float2 xyWaveNormMod )
+{
+   //float2 baseUV = input.globalUV_cwmUV.xy * g_foamMapUVScale;
+   float2 baseUV = input.globalUV_cwmUV.zw * g_foamMapUVScale;
+   float2 xyFoamWaveNormMod = xyWaveNormMod * 10.0 * 0.0;
+
+   float2 fuv1 = baseUV * 1.0 - g_foamFakeFlowTime[0] * waterVelocity * 1.0;
+   float2 fuv2 = baseUV * 1.1 - g_foamFakeFlowTime[1] * waterVelocity * 1.1;
+   float2 fuv3 = baseUV * 0.9 - g_foamFakeFlowTime[2] * waterVelocity * 0.9;
+   
+   float f1 = (tex2D( g_foamMapTexture, fuv1 + xyFoamWaveNormMod ).x) * g_foamFakeFlowAlpha[0];
+   float f2 = (tex2D( g_foamMapTexture, fuv2 + xyFoamWaveNormMod ).x) * g_foamFakeFlowAlpha[1];
+   float f3 = (tex2D( g_foamMapTexture, fuv3 + xyFoamWaveNormMod ).x) * g_foamFakeFlowAlpha[2];
+   
+   return saturate( saturate(amountOfFoam*1.4) * (f1 + f2 + f3 + 0.3) * 1.7 );
+   //return tex2D( g_foamMapTexture, baseUV );
+}
+
+float3 sampleAnimatedDetailWave( float2 uv )
+{
+   return lerp( tex2D( g_detailWaveA, uv ).xyz, tex2D( g_detailWaveB, uv ).xyz, g_detailWaveLerpK ) - float3( 0.5, 0.5, 0.5 );
+}
+
+void sampleDetailWaves( PreviewVertexOutput input, float2 waterVelocity, out float3 normal, out float height )
+{
+   //float2 baseUV = input.globalUV_cwmUV.xy * g_detailWaveUVScale;
+   float2 baseUV = input.globalUV_cwmUV.zw * g_detailWaveUVScale;
+   
+   //height = sampleAnimatedDetailWave(baseUV).a;
+   
+   float2 fuv1 = baseUV * (1.0) - g_detailWaveFakeFlowTime[0] * waterVelocity * (1.0 + 0.0001);
+   float2 fuv2 = baseUV * 1.0 - g_detailWaveFakeFlowTime[1] * waterVelocity * 1.0;
+   float2 fuv3 = baseUV * (1.0) - g_detailWaveFakeFlowTime[2] * waterVelocity * (1.0 - 0.0001);
+   
+   float3 h1 = sampleAnimatedDetailWave( fuv1 ) * g_detailWaveFakeFlowAlpha[0];
+   float3 h2 = sampleAnimatedDetailWave( fuv2 ) * g_detailWaveFakeFlowAlpha[1];
+   float3 h3 = sampleAnimatedDetailWave( fuv3 ) * g_detailWaveFakeFlowAlpha[2];
+   
+   float speed = sqrt( waterVelocity.x * waterVelocity.x + waterVelocity.y + waterVelocity.y );
+
+   
+   normal = (h1 + h2 + h3) * (speed * 2.0 * 0.85 + 0.15);
+   
+   // normal.z actually holds the height!
+   height = normal.z;
+   
+   normal.z = sqrt( 1 - (normal.x*normal.x + normal.y*normal.y) );
+}
+
+float3 calcReflection( float3 worldEyeDir, float3 worldNormal )
+{
+   float3 reflectionVec = reflect( worldEyeDir, worldNormal );
+   //
+   // Hack reflection so that it doesn't point downwards - back sides of waves (that we mostly shouldn't 
+   // be visible) will, when looking water at close-to-horizontal angles, sample cubemap below horizont 
+   // level and look bad, while in reality should just reflect other water behind - so hack-prevent this.
+   // (see 'Using Vertex Texture Displacement for Realistic Water Rendering', Yuri Kryachko, GPU Gems 2
+   // for the initial idea)
+   //reflectionVec.z = max( 0, reflectionVec.z ); // just clamp - doesn't look good
+   reflectionVec.z = reflectionVec.z + saturate(-(reflectionVec.z-0.25) / 1.25); // leave all z values from 1 to 0.25, interpolate all (0.25, -1) into (0.25, 0) range for smoother clamping effect.
+   reflectionVec = normalize( reflectionVec );
+   return texCUBE( g_skyCubeMapTexture, float4( reflectionVec, 1 ) );
+}
+
+/*
+float3 my_refract( float3 I, float3 N, float ri )
+{
+   float cosI = dot( -I, N );
+   float cosT = 1.0 - ri*ri * ( 1.0 - cosI*cosI );
+   float3 T = ri * I + (( ri * cosI - sqrt( abs( cosT ) ) ) * N);
+   return T * (float3)(cosT > 0);
+}
+*/
+
+// sample the submerged terrain
+// <normal in world space please!>
+float3 sampleRefractedBackground( PreviewVertexOutput input, float3 eyeDir, float3 normal, float2 screenUV )
+{
+   const float waterDepth           = input.waterConsts.y;
+   const float approxWaterEyeDepth  = input.waterConsts.z;
+   const float distanceToCamera     = input.worldPos.w;
+   
+   // Water background (terrain) at given pixel + refraction
+   //normal = float3( 0, 0, 1 );
+   float3 refractionVec = refract( eyeDir, normal, 0.90 );
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // This would be the 'right' way to calculate UV. There's a problem however.
+   // input.worldPos.xyz is calculated in the vertex shader and interpolated, as 
+   // well as eyeDir and approxWaterEyeDepth, etc, so by the point we get the 
+   // refracted screenUV we have lost so much so that if we're close to the 
+   // triangles it will look rubbish.
+   // But it's a good reference point for the approximation below.
+   // Approximation also doesn'tsuffer from the imprecision problem as it only
+   // calculates sampling uv difference that is added to our screenUV (which is
+   // obtained from VPOS).
+   // 
+   // feel free to uncomment this to see how reflection should (probably) really look like
+   //float4 ab = float4( input.worldPos.xyz + (refractionVec - eyeDir) * approxWaterEyeDepth, 1 ) ;
+   //ab = mul( ab, g_viewProjection );
+   //ab *= 1.0 / ab.w;
+   //ab.xy = ab.xy * 0.5 + float2( 0.5, 0.5 );
+   //ab.y = 1 - ab.y;
+   //return tex2D( g_waterBackgroundTexture, ab.xy );
+   // (it's not really a completely 'right' way either - we would have to have
+   // access to terrain background and water z buffers to be able to calculate
+   // proper distanceToCamera and waterEyeDepth (distance that ray passes from
+   // water surface to submerged terrain)
+   ////////////////////////////////////////////////////////////////////////////
+   
+   // don't use approxWaterEyeDepth but only waterDepth as 1.) it's not too 
+   // correct on river banks, 2.) it causes too much ripple at high angles where 
+   // refraction isn't too visible because of the reflection (fresnel effect).
+   
+   float3 refrDiff = mul( (refractionVec - eyeDir) * approxWaterEyeDepth, (float3x3)g_view );
+   //float3 refrDiff = mul( (refractionVec - eyeDir) * waterDepth, (float3x3)g_view );
+   
+   // this one is not correct - it shouldn't be the real distance but the one obtained by
+   // float4x3 view transform... if we could get Z we could calculate the real one, but it's
+   // good enough for now.
+   // (also it is was only the approximation to begin with..)
+   refrDiff.z = distanceToCamera + approxWaterEyeDepth;
+   //refrDiff.z = distanceToCamera + waterDepth;
+   
+   float wDiv = 1 / (refrDiff.z*g_proj[2][3]); // * 0.5;
+   // both x&y should be * 0.5 but since x behaves better allow it a bit more
+   refrDiff.x = refrDiff.x*g_proj[0][0] * wDiv;
+   refrDiff.y = -refrDiff.y*g_proj[1][1] * wDiv * 0.6;
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // (this block can be removed)
+   // Now the biggest hacks of them all... increase refraction if very small, decrease
+   // if too big. Not really needed.
+   float size = sqrt(refrDiff.x*refrDiff.x + refrDiff.y*refrDiff.y);
+   float sizeNew = pow( size * 30, 0.7 ) / 30;
+   refrDiff.xy *= sizeNew / size;
+   ////////////////////////////////////////////////////////////////////////////
+   
+   // Also, hack the y away on the bottom edge as it's too strong and we don't have
+   // any texture below 1!
+   //refrDiff.y *= 0.8;
+   float yFix = saturate( ((screenUV.y + refrDiff.y) - 0.91) / 0.15 );
+   refrDiff.y = lerp( refrDiff.y, 0, yFix );
+   
+   float3 ret = tex2D( g_waterBackgroundTexture, screenUV + refrDiff.xy );
+
+   //ret.xy = pow( size * 50, 0.6 );
+   //ret.z = yFix;
+   
+   return ret;
+}
+
+float4 main_water( PreviewVertexOutput input, float4 screenVPOS : VPOS ) : COLOR
+{
+   const float waterFadeAway        = input.waterConsts.x;
+   const float waterDepth           = input.waterConsts.y + 0.12;  // wtf is this .12 magic number needed for? :(
+   const float distanceToCamera     = input.worldPos.w;
+
+   // this should actually be calculated by comparing distance between background and current 
+   // water pixels, but... we'll fake it.
+   const float approxWaterEyeDepth  = input.waterConsts.z;  
+
+   ////////////////////////////////////////////////////////////////////////////
+   // Early out clipping
+   //
+   // If negative it's out of blend range and shouldn't be rendered.
+   clip( input.waterConsts.x );
+   //
+   // If negative, the terrain is above water - we must clip this pixel.
+   clip( waterDepth );
+   ////////////////////////////////////////////////////////////////////////////
+
+   ////////////////////////////////////////////////////////////////////////////
+   // Get inputs, etc
+   //
+   // calculate screen tex coord for sampling screen texture
+   float2 screenUV      = screenVPOS.xy * g_VPOS_2_ScreenUV.xy + g_VPOS_2_ScreenUV.zw;
+   // 
+   // get tangentToWorldSpace matrix for later use
+   float3x3 tangentToWorldSpace;
+   tangentToWorldSpace[0] = input.worldToTang0;
+   tangentToWorldSpace[1] = input.worldToTang1;
+   tangentToWorldSpace[2] = input.worldToTang2;
+   //
+   // These are now in world space for water (unlike in terrain shader).
+   float3 lightDir   = normalize( input.lightDir );
+   float3 eyeDir     = normalize( input.eyeDir );
+   //
+   ////////////////////////////////////////////////////////////////////////////
+   //
+   // Sample the normal (it is in tangent space!)
+   float3 normal     = sampleNormal( input );
+   //normal = float3( 0, 0, 1 );
+   //
+   // Water velocity at given pixel
+   float2 waterVelocity = tex2D( g_waterVelocityTexture, input.globalUV_cwmUV.zw ) - float2( 0.5, 0.5 );
+   //
+   // Now sample the detail wave (with velocity-based flow effect)
+   float3   detailWaveNormal;
+   float    detailWaveHeight;
+   sampleDetailWaves( input, waterVelocity, detailWaveNormal, detailWaveHeight );
+   //
+   // This is used to smoothen the shoreline edge to artificially remove various artifacts (fake antialiasing)
+   //float edgeSmoothen   = clamp( waterDepth / g_waterMinVisibleLimitDepth, 0.03, 1.0 ); // clamp( waterDepth * 0.3, 0.6, 1.0 );
+   float edgeSmoothen   = clamp( waterDepth / min( distanceToCamera + 100, 300 ) * 400.0, 0.03, 1.0 ); // clamp( waterDepth * 0.3, 0.6, 1.0 );
+   //
+   ////////////////////////////////////////////////////////////////////////////
+   // Add detail wave normal to our normal and then transform it from tangent to world space.
+   normal.xy += detailWaveNormal.xy * g_detailWaveStrength * edgeSmoothen;
+   normal = normalize( normal );
+   normal = mul( normal, tangentToWorldSpace );
+   // <now we have the final normal in world space>
+   ////////////////////////////////////////////////////////////////////////////
+   //
+   ////////////////////////////////////////////////////////////////////////////
+   // Calculate the diffuse and specular light (for water surface)
+   float diffuseAmount  = CalculateDiffuseStrength( normal, lightDir );
+   float specularAmount = 0.8 * pow( CalculateSpecularStrength( normal, lightDir, eyeDir ), 64 );
+   ////////////////////////////////////////////////////////////////////////////
+   //
+   ////////////////////////////////////////////////////////////////////////////
+   // Calculate to modify-UV for sampling all textures using the current normal to account for the
+   // effect of a wave that the normal represents.
+   // <NOT CORRECT, TEMP HACK, SHOULD USE SOME KIND OF HEIGHT-BASED PARALAX!!>
+   float2 xyWaveNormMod = normal.xy * g_samplingWaveSimNormalInfluence;
+   ////////////////////////////////////////////////////////////////////////////
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Calculate Fresnel reflection term
+   const float fresBias       = 0.15;
+   const float fresScale      = 3.0;
+   const float fresPower      = 3.0;
+   const float fresFinalScale = 0.9;
+   float fresnelTerm = saturate( fresFinalScale * saturate( fresBias + fresScale * pow( 1.0 - dot( normal, eyeDir ), fresPower) ) );
+   ////////////////////////////////////////////////////////////////////////////
+
+   ////////////////////////////////////////////////////////////////////////////
+   // Sample submerged stuff color with refraction.
+   //
+   float3 submergedStuffColor = sampleRefractedBackground( input, -eyeDir, normal, screenUV );
+   ////////////////////////////////////////////////////////////////////////////
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Sample foam and process it using foam texture with velocity-based flow.
+   //
+   float amountOfFoam = sampleFoam( input.globalUV_cwmUV.zw + xyWaveNormMod ).x;
+   float foamColor = calculateFoam( input, amountOfFoam, waterVelocity, xyWaveNormMod );
+   ////////////////////////////////////////////////////////////////////////////
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Calculate reflection color (only sky cubemap supported for now...)
+   //
+   float3 reflectedColor = calcReflection( -eyeDir, normal );
+   ////////////////////////////////////////////////////////////////////////////
+   
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Combine everything!
+   
+   const float3 deepWaterColor      = float3( 0.02, 0.20, 0.25 );
+   const float3 surfaceWaterColor   = float3( 0.05, 0.40, 0.50 );
+   
+   const float dirtynessFactor   = 0.12;
+   const float waterTransparency = 0.992;
+   
+   submergedStuffColor = lerp( deepWaterColor, submergedStuffColor, saturate( -0.05 + pow( waterTransparency, approxWaterEyeDepth ) ) );
+   
+   float3 surfaceColor = surfaceWaterColor * diffuseAmount;
+   
+   float4 color;
+   color.xyz = lerp( submergedStuffColor, reflectedColor, fresnelTerm ) + float3( 1.0, 0.9, 0.7 ) * specularAmount;
+   color.xyz = lerp( color.xyz, surfaceColor, dirtynessFactor );
+   color.xyz = lerp( color.xyz, float3( 0.85, 0.92, 0.94 ), foamColor * 0.95 );
+
+   ////////////////////////////////////////////////////////////////////////////
+   // DEBUGGING
+   // 
+   // Red debug output on the edges!
+   // if( waterDepth <= 0.01 )
+   //   color = float4( 1.0 * diffuseAmount, 0.0, 0.0, 1.0 );
+   //color.xyz = lerp( color.xyz, g_debugColor.xyz, g_debugColor.w ); // this should really be removed from the final output...
+   //color.x = fresnelTerm;
+   //color.xyz = sampleFoam( input.globalUV_cwmUV.zw + normal.xy * 0.002 ).x;
+   //color.xyz = tex2D( g_waterVelocityTexture, input.globalUV_cwmUV.zw ).z;
+   //color.xyz = float3( detailWaveNormal.x * 3 + 0.5, detailWaveNormal.y * 3 + 0.5, 1.0 );
+   //color.xyz = normal;
+   ////////////////////////////////////////////////////////////////////////////
+  
+   color.a = edgeSmoothen * waterFadeAway;
+  
+   return saturate( color );
+}

@@ -1,0 +1,87 @@
+//-----------------------------------------------------------------------------
+// File: aTerrainOverlay.psh
+//
+// Desc: The pixel shader file for the HLSLWithoutFX sample.  It contains a pixel 
+//		 shader which passes the color from the vertex shader through.
+// 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+//-----------------------------------------------------------------------------
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+bool     g_displayVelocities;
+
+float    g_worldZSize;
+
+float    g_currentZoom;
+
+sampler  g_heightmapLinFilteredTexture;
+sampler  g_depthmapLinFilteredTexture;
+
+/*
+sampler  g_heightmapTexture;
+sampler  g_depthmapTexture;
+sampler  g_velocitymapTexture;
+
+float    g_waterIgnoreBelowDepth;
+
+struct FixedVertexOutput
+{
+   float4   position          : POSITION;   // vertex position 
+   float2   tex0              : TEXCOORD0;
+};
+*/
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+float4 main( FixedVertexOutput input ) : COLOR
+{
+   float4 color = tex2D( g_heightmapTexture, input.tex0 );
+   
+   float depth       = tex2D( g_depthmapTexture, input.tex0 );
+   float2 velocity   = tex2D( g_velocitymapTexture, input.tex0 );
+   
+   float speed = sqrt( velocity.x * velocity.x + velocity.y * velocity.y ) + 0.0001;
+   float waterIgnoreBelow = max( 0, g_waterIgnoreBelowDepth ); //* saturate(1.1 - speed*5) );
+   
+   float d = (depth - waterIgnoreBelow);
+   d = saturate( 0.3 * saturate( d * 10000000 ) + 0.7 * saturate( d * 50 ) );
+
+   if( !g_displayVelocities )
+   {
+      color = lerp( color, float4( 0, 0, 1, 1 ), d );
+      
+      float filteredHeight = tex2D( g_heightmapLinFilteredTexture, input.tex0 );
+      float filteredDepth = tex2D( g_depthmapLinFilteredTexture, input.tex0 );
+      float waterHeight = filteredHeight * g_worldZSize + filteredDepth;
+
+      color.g += saturate( (filteredDepth-waterIgnoreBelow) * 10000.0 ) * saturate( (sin( 1.0 * waterHeight * 3.1415 ) - (1.0 - 0.05 / g_currentZoom)) * 10 * g_currentZoom );
+      
+      color += saturate( (sin( 0.05 * waterHeight * 3.1415 ) - (1.0 - 0.04 / g_currentZoom)) * 5 * g_currentZoom );
+   }
+   else
+   {
+      float speed = length( velocity );
+      velocity *= 0.5 / speed;
+      
+      float4 velocityColor = lerp( float4( 0.05, 0.05, 0.05, 1 ), saturate( float4( velocity.x + 0.5, velocity.y + 0.5, - velocity.x - velocity.y , 1 ) ), saturate( speed * 2.0 + 0.1 ) );
+      
+      color = lerp( color, velocityColor, saturate(d + 0.2) );
+      
+      color = velocityColor;
+   }
+   
+ 
+   return color;
+}
+
+sampler  g_inputTexture;
+float4   g_inputColor;
+
+float4 textureToScreen( FixedVertexOutput input ) : COLOR
+{
+   //return float4( 0, 0, 1, 1 );
+   return g_inputColor * tex2D( g_inputTexture, input.tex0 );
+}

@@ -1,0 +1,301 @@
+//-----------------------------------------------------------------------------
+// File: aTerrainOverlay.psh
+//
+// Desc: The pixel shader file for the HLSLWithoutFX sample.  It contains a pixel 
+//		 shader which passes the color from the vertex shader through.
+// 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+//-----------------------------------------------------------------------------
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+float2         g_samplerPixelSize;
+
+float          g_waterSpeedMul;
+
+//float          g_time;
+float2         g_noiseTexUVAdd;
+float2         g_repositionOffsetUV;
+
+sampler        g_waveSimTexture;
+
+sampler        g_foamSimTexture;
+
+sampler        g_noiseTexture;
+
+sampler        g_inputTexture;
+
+float          g_waveSimDamping;
+
+bool        g_hasLoDetailLayer;
+sampler     g_combinedPrevTexture;
+sampler     g_loDetailLayerCombinedTexture;
+float       g_loDetailLayerHeightMultiplier;
+float       g_loDetailLayerTimeLerpK;              // Used to lerp between previous and current state of the water simulation
+float4      g_loDetailTexCoordsConvConsts;
+
+//
+struct SimOutput
+{
+   float4   depth    : COLOR0;
+   float4   velocity : COLOR1;
+};
+
+//-----------------------------------------------------------------------------
+
+// This function is used to reposition texture once layer has moved.
+float4 repositionOnly( FixedVertexOutput input ) : COLOR0
+{
+   return tex2D( g_inputTexture, input.tex0 + g_repositionOffsetUV );
+}
+
+float2 getVelocityOffset( float4 velocityMap )
+{
+   float2 velocity      = velocityMap.xy - float2( 0.5, 0.5 );
+   return float2( - velocity * g_waterSpeedMul );
+}
+
+// Only move g_inputTexture using provided g_velocitymapTexture
+float4 simpleFlow( FixedVertexOutput input ) : COLOR0
+{
+   float4 velocityMap      = tex2D( g_velocitymapTexture, input.tex0 );
+   float2 velocityOffset   = getVelocityOffset( velocityMap );
+   float2 uvCenter         = input.tex0 + velocityOffset.xy;
+   
+   return tex2D( g_inputTexture, uvCenter );
+}
+
+struct WaveSimOutput
+{
+   float4   depth    : COLOR0;
+   //float4   depthPrev : COLOR1;
+};
+
+// This function does the actual wave simulation
+WaveSimOutput waveSim( FixedVertexOutput input )
+{
+   float4 velocityMap      = tex2D( g_velocitymapTexture, input.tex0 );
+   float2 velocityOffset   = getVelocityOffset( velocityMap );
+   float2 uvCenter         = input.tex0 + velocityOffset.xy;
+   
+   float    noise       = tex2D( g_noiseTexture, 1.0 * input.tex0 + g_noiseTexUVAdd );
+   
+   //waveSim = lerp( waveSim, velocity * 2, 0.1 );
+   
+   //float edgeCut *= haswater;   
+   float edgeCut = velocityMap.w;
+   
+   float2 samplerOffset = g_samplerPixelSize * 1.0;
+
+   //float2 uv0        = uvCenter + float2( -samplerOffset.x,  -samplerOffset.y   );
+   //float2 uv2        = uvCenter + float2( +samplerOffset.x,  -samplerOffset.y   );
+   //float2 uv6        = uvCenter + float2( -samplerOffset.x,  +samplerOffset.y   );
+   //float2 uv8        = uvCenter + float2( +samplerOffset.x,  +samplerOffset.y   );
+   //float sample0     = tex2D( g_waveSimTexture, uv0 ).x * 2.0 - 1.0;
+   //float sample2     = tex2D( g_waveSimTexture, uv2 ).x * 2.0 - 1.0;
+   //float sample6     = tex2D( g_waveSimTexture, uv6 ).x * 2.0 - 1.0;
+   //float sample8     = tex2D( g_waveSimTexture, uv8 ).x * 2.0 - 1.0;
+
+   float2 uv1        = uvCenter + float2( 0,                         -samplerOffset.y   );
+   float2 uv3        = uvCenter + float2( -samplerOffset.x,  0                          );
+   float2 uv5        = uvCenter + float2( +samplerOffset.x,  0                          );
+   float2 uv7        = uvCenter + float2( 0,                         +samplerOffset.y   );
+
+   float2 waveCenter = tex2D( g_waveSimTexture, uvCenter );
+
+   //float sample4     = waveCenter.x;
+   float sample4Prev = waveCenter.y * 2.0 - 1.0;      // <- this is the only way of getting the prev 
+   
+   float sample1     = tex2D( g_waveSimTexture, uv1 ).x * 2.0 - 1.0;
+   float sample3     = tex2D( g_waveSimTexture, uv3 ).x * 2.0 - 1.0;
+   float sample5     = tex2D( g_waveSimTexture, uv5 ).x * 2.0 - 1.0;
+   float sample7     = tex2D( g_waveSimTexture, uv7 ).x * 2.0 - 1.0;
+   
+   float4 windMap    = float4( 1.0, 1.0, 1.0, 1.0 );
+   float windMapSum  = (windMap.x + windMap.y + windMap.z + windMap.w) / 4.0;
+ 
+   //float k = ( sample0 + sample2 + sample6 + sample8 + sample1 + sample3 + sample5 + sample7 ) / 4.0 - sample4Prev;
+   float k = (( sample1 * windMap.y + sample3 * windMap.x + sample5 * windMap.z + sample7 * windMap.w ) / windMapSum) / 2.0 - sample4Prev;
+   
+   noise = (noise * 2.0 - 1.0) * (velocityMap.z + 0.2) * 1.3;
+   k += clamp( pow( abs( noise ), 5 ) * 0.35 * sign(noise) * pow( g_waveSimDamping, 16 ), -0.35, 0.35 );
+   
+   k *= g_waveSimDamping;
+
+   float retK     = clamp( k * edgeCut, -1.0, 1.0 );
+   
+   WaveSimOutput output;
+   
+   output.depth      = float4( (retK + 1.0) * 0.5, waveCenter.x, 0.0, 0.0 );
+   //output.depthPrev  = waveCenter.x;
+   
+   return output;
+}
+
+float2      g_splashUV;
+float       g_splashRadius;
+float4 doSimpleWaveSplash( FixedVertexOutput input ) : COLOR0
+{
+   //float2 waveSim = tex2D( g_waveSimTexture, input.tex0 );
+
+   float2 diff = input.tex0 - g_splashUV;
+   float dist = sqrt( diff.x*diff.x + diff.y*diff.y );
+   
+   clip( g_splashRadius - dist );
+/*
+   if( dist < g_splashRadius )
+   {
+      //   waveSim.x *= 0.5;
+      return float4( 0, 0.5, 0, 1 );
+   }
+   */
+   
+   // just output 0s if we're in range...
+   return( 0, 0, 0, 0 );
+   
+   //return float4( waveSim.x, waveSim.y, 0, 0 );
+}
+
+float g_layerLevelBasedFoamMul;
+
+// Only move g_inputTexture using provided g_velocitymapTexture
+float4 foamSim( FixedVertexOutput input ) : COLOR0
+{
+   float4 velocityMap      = tex2D( g_velocitymapTexture, input.tex0 );
+   float2 velocityOffset   = getVelocityOffset( velocityMap );
+   float2 uvCenter         = input.tex0 + velocityOffset.xy * 1.0;
+   
+   float foam     = tex2D( g_foamSimTexture, uvCenter ).x;
+   float2 waveSim = tex2D( g_waveSimTexture, uvCenter );
+   
+   float noise1    = tex2D( g_noiseTexture , input.tex0 * 16.0 + g_noiseTexUVAdd.x*float2(25.0, 1.0) ).x;
+   float noise2    = tex2D( g_noiseTexture , input.tex0 * 16.0 + g_noiseTexUVAdd.x*float2(-25.0, -1.0)  ).y;
+
+   float noise = saturate( (pow( (noise1 * noise2 - 0.2), 2 )+0.02) * 10.0 );
+
+   //float addition = velocityMap.z * /*(abs(waveSim.y - waveSim.x)+0.15)**/ noise * 50.0;
+ 
+   float2 pixelSize  = g_samplerPixelSize * 2;  
+   float2 texA       = uvCenter + float2( - pixelSize.x * 1.5, - pixelSize.y * 0.5 );
+   float2 texB       = uvCenter + float2( + pixelSize.x * 0.5, - pixelSize.y * 1.5 );
+   float2 texC       = uvCenter + float2( + pixelSize.x * 1.5, + pixelSize.y * 0.5 );
+   float2 texD       = uvCenter + float2( - pixelSize.x * 0.5, + pixelSize.y * 1.5 );
+   float2 waveSimA   = tex2D( g_waveSimTexture, texA );
+   float2 waveSimB   = tex2D( g_waveSimTexture, texB );
+   float2 waveSimC   = tex2D( g_waveSimTexture, texC );
+   float2 waveSimD   = tex2D( g_waveSimTexture, texD );
+   
+   //float delta = max( abs( waveSimA.x - waveSimC.x ), abs( waveSimB.x - waveSimD.x ) );
+   float delta = abs( waveSimA.x - waveSimC.x ) + abs( waveSimB.x - waveSimD.x );
+  
+   //foam += min( (noise) *  * delta * 100.0, 0.5 );
+   
+   float perturbance = velocityMap.z;
+   
+   float foamCausingWave = max(0, sin( delta * 50 ));
+   foamCausingWave *= saturate( (abs( delta ) - 0.2) * 1000000 );
+   
+   float foamAdd = (foamCausingWave + saturate(perturbance - 0.2)) * 0.7;
+   
+   foamAdd *= g_layerLevelBasedFoamMul * noise;
+   
+   foam += foamAdd;
+
+   foam = foam * 0.96 - 0.001;
+   
+   return float4( saturate( foam ), 0, 0, 0 );
+   return float4( noise, 0, 0, 0 );
+}
+
+void shaderUpdateDefaultValues( FixedVertexOutput input, out float4 waveMap : COLOR0, out float4 foamMap : COLOR1 )
+{
+   waveMap  = float4( 0.5f, 0.5f, 0.0f, 0.0f );
+   foamMap  = float4( 0.0f, 0.0f, 0.0f, 0.0f );
+}
+
+float4 updatePrevHeight( FixedVertexOutput input ) : COLOR0
+{
+   float2   waveSim     = tex2D( g_waveSimTexture, input.tex0 );
+   return float4( waveSim.x, waveSim.y, 0, 0 );
+}
+
+float4 updateCombinedHeights( FixedVertexOutput input ) : COLOR0
+{
+   float hPrev = tex2D( g_combinedPrevTexture, input.tex0 ).x;
+
+   float h = tex2D( g_waveSimTexture, input.tex0 ).x;
+   // these are in range 0..1 with average being 0.5!
+
+   h = (h - 0.5) * 2.0;
+   h = h + pow( abs( h ), 3.0 ) * 0.3;
+   h = (h * 0.5) + 0.5;
+
+   if( g_hasLoDetailLayer )
+   {
+      float2 ldUV = input.tex0 * g_loDetailTexCoordsConvConsts.zw + g_loDetailTexCoordsConvConsts.xy;
+      
+      float2 sampLo = tex2D( g_loDetailLayerCombinedTexture, ldUV ).xy * c_combinedHeightmapPrecisionMod;
+      
+      float ldH = lerp( sampLo.y, sampLo.x, g_loDetailLayerTimeLerpK );
+      
+      ldH *= c_combinedHeightmapReduceInflMod;   // reduce influence of upper layers so to hit the bit depth limit later
+      
+      h = h + ldH * g_loDetailLayerHeightMultiplier;
+   }
+
+   //h = pow( h, 0.7 );
+   
+   //return float4( 0.01, 0.0, 0.0, 1.0 );
+
+   // these are now in range 0..1 with average being 0.5/c_combinedHeightmapPrecisionMod for the upmost layer
+   return float4( h / c_combinedHeightmapPrecisionMod, hPrev, 0, 0 );
+}
+
+float4 updateCombinedFoam( FixedVertexOutput input ) : COLOR0
+{
+   float fPrev = tex2D( g_combinedPrevTexture, input.tex0 ).x;
+   float f = tex2D( g_foamSimTexture, input.tex0 ).x;
+
+   if( g_hasLoDetailLayer )
+   {
+      float2 ldUV = input.tex0 * g_loDetailTexCoordsConvConsts.zw + g_loDetailTexCoordsConvConsts.xy;
+      
+      float2 sampLo = tex2D( g_loDetailLayerCombinedTexture, ldUV ).xy;
+      
+      float ldF = lerp( sampLo.y, sampLo.x, g_loDetailLayerTimeLerpK );
+      
+      ldF *= 0.1;
+      
+      f = f * 0.9 + ldF;
+   }
+
+   return float4( f, fPrev, 0, 0 );
+}
+
+sampler           g_combinedHeightMapTexture;
+
+float4 updateCombinedHNormals( FixedVertexOutput input ) : COLOR0
+{
+	float2 uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22;
+	computeSobel3x3Offsets( input.tex0, g_samplerPixelSize * 1.1, uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22 );
+
+  	float4 ac, bc, ap, bp;
+	
+	sampleSobel3x3HeightsX( g_combinedHeightMapTexture, uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22, ac, bc );
+	sampleSobel3x3HeightsY( g_combinedHeightMapTexture, uv00, uv10, uv20, uv01, uv21, uv02, uv12, uv22, ap, bp );
+	
+	ac *= c_combinedHeightmapPrecisionMod;
+	bc *= c_combinedHeightmapPrecisionMod;
+	ap *= c_combinedHeightmapPrecisionMod;
+	bp *= c_combinedHeightmapPrecisionMod;
+
+   float3 normalc = computeSobel3x3Normal( ac, bc, 0.8 );
+   float3 normalp = computeSobel3x3Normal( ap, bp, 0.8 );
+   
+   float2 hh = tex2D( g_combinedHeightMapTexture, input.tex0 );
+   
+   float4 retVal = float4( normalc.x, normalc.y, normalp.x, normalp.y );
+   return retVal * 0.5 + float4( 0.5, 0.5, 0.5, 0.5 );
+}

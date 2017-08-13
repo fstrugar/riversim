@@ -1,0 +1,12 @@
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+float4 g_justOutputColorValue;
+
+float4 justOutputColor( FixedVertexOutput input ) : COLOR
+{
+   return g_justOutputColorValue;
+}
+

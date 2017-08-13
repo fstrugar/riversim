@@ -1,0 +1,463 @@
+//-----------------------------------------------------------------------------
+// File: aTerrainOverlay.psh
+//
+// Desc: The pixel shader file for the HLSLWithoutFX sample.  It contains a pixel 
+//		 shader which passes the color from the vertex shader through.
+// 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+//-----------------------------------------------------------------------------
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+float2         g_splashUVPos;
+float          g_splashIntensity;
+float          g_splashRadius;
+
+float          g_absorption;
+float          g_precipitation;
+float          g_linVelocityDamping;
+float          g_sqrVelocityDamping;
+float          g_diffusion;
+float          g_acceleration;
+
+float          g_depthBasedFrictionMinDepth;
+float          g_depthBasedFrictionMaxDepth;
+float          g_depthBasedFrictionAmount;
+
+float          g_worldZSize;
+
+static float   g_zeroVelocityBelowDepth = 0.000001;
+
+float          g_shallowLinVelDampDepthFrom;
+float          g_shallowLinVelDamping;
+
+float2         g_samplerPixelSize;
+//float2         g_samplerPixelDims;
+
+//float          g_windShake;
+
+//float2         g_PerturbOffset;
+//float2         g_FastPerturbOffset;
+//float2         g_VeryFastPerturbOffset;
+
+sampler        g_springmapTexture;
+float          g_springBoost;
+
+//
+//uniform bool   g_bInitializing;
+
+//
+struct SimOutput
+{
+   float4   depth    : COLOR0;
+   float4   velocity : COLOR1;
+};
+
+//-----------------------------------------------------------------------------
+
+float    sampleTerrainHeight( float2 uv )
+{
+   return tex2D( g_heightmapTexture, uv ).x * g_worldZSize;
+}
+
+SimOutput splashArea( FixedVertexOutput input )
+{
+   float    depth       = tex2D( g_depthmapTexture, input.tex0 );
+   float2   velocity    = tex2D( g_velocitymapTexture, input.tex0 );
+   
+   float dist = clamp( (1.0f - distance( input.tex0, g_splashUVPos ) / g_splashRadius) * 3, 0, 1 );
+   
+   float splashAdd = g_splashIntensity * dist;
+   
+   if( dist > 0.1 )
+   {
+      velocity *= depth;
+      depth += splashAdd;
+      velocity /= depth;
+   }
+   
+ 
+   SimOutput output;
+  
+   output.depth      = depth;
+   output.velocity   = float4( velocity.x, velocity.y, 0, 0 ); //float4( velocity.x * 0.5 + 0.51, velocity.y * 0.5 + 0.49, 0, 0 );
+   
+   return output;
+}
+
+float2   g_rasterSize;
+float2   g_springPos;
+float    g_springRadius;
+float    g_springNormalizedQuantity;
+
+float4 addSpring( FixedVertexOutput input ) : COLOR
+{
+   float    depth = tex2D( g_depthmapTexture, input.tex0 );
+   
+   float2   delta = (input.tex0 - g_springPos) * g_rasterSize;
+   
+   float distQ    = clamp( 1.0 - sqrt( delta.x*delta.x + delta.y*delta.y ) / g_springRadius, 0.0, 1.0 );
+   
+   float amount   = sqrt( distQ );
+
+   return float4( depth + amount * g_springNormalizedQuantity, 0, 0, 0 );
+}
+
+//-----------------------------------------------------------------------------
+
+// Will clamp velocity to 0.499, and apply linear and sq damping
+float2 RegulateVelocity( float2 vec, float depth, float min9Depth )
+{
+   // calculate velocity magnitude
+   float l = sqrt( vec.x * vec.x + vec.y * vec.y ) + 0.00001;
+   
+   // upper limit of 0.499
+   float lnew = min( l, 0.499 );
+   
+   // Calculate additional 'shallowness' damping
+   //float linDamp = lerp( g_linVelocityDamping, g_shallowLinVelDamping, saturate( g_shallowLinVelDampDepth - depth ) );
+   float linDamp = g_linVelocityDamping;
+   
+   float frictionKC = saturate( (depth - g_depthBasedFrictionMinDepth) / (g_depthBasedFrictionMaxDepth - g_depthBasedFrictionMinDepth) );
+   float frictionK9 = saturate( (min9Depth - g_depthBasedFrictionMinDepth) / (g_depthBasedFrictionMaxDepth - g_depthBasedFrictionMinDepth) );
+   linDamp *= lerp( g_depthBasedFrictionAmount*g_depthBasedFrictionAmount, 1.0, frictionKC );
+   linDamp *= lerp( g_depthBasedFrictionAmount, 1.0, frictionK9 );
+   
+   // linear damp
+    lnew *= linDamp;
+
+   // ^2 damp
+   float ldamp = lnew * g_sqrVelocityDamping;
+   lnew -= ldamp * ldamp;
+
+   return vec * (lnew / l);
+}
+
+// Used to prevent small quantities of water from moving around to reduce
+// losses due to imprecision
+float limitedClamp( float a, float minLimit, float maxLimit )
+{
+/*   const float limit = 0.0001;
+   
+   minLimit = min( minLimit + limit, 0 );
+   maxLimit = max( maxLimit - limit, 0 );
+   */
+   return clamp( a, minLimit, maxLimit );
+}
+
+SimOutput simulateDiffuse( FixedVertexOutput input, uniform bool diffuseOnly )
+{
+   ////////////////////////////////////////////////////////////////////////////
+   // Calculate neighbouring pixels sampling coords
+   //   
+   float2 uvCenter  = float2( input.tex0.x, input.tex0.y );
+   float2 uvRight   = float2( input.tex0.x + g_samplerPixelSize.x, input.tex0.y );
+   float2 uvDown    = float2( input.tex0.x, input.tex0.y + g_samplerPixelSize.y );
+   float2 uvLeft    = float2( input.tex0.x - g_samplerPixelSize.x, input.tex0.y );
+   float2 uvUp      = float2( input.tex0.x, input.tex0.y - g_samplerPixelSize.y );
+   float2 uv0        = float2( input.tex0.x - g_samplerPixelSize.x, input.tex0.y - g_samplerPixelSize.y );
+   float2 uv2        = float2( input.tex0.x + g_samplerPixelSize.x, input.tex0.y - g_samplerPixelSize.y );
+   float2 uv6        = float2( input.tex0.x - g_samplerPixelSize.x, input.tex0.y + g_samplerPixelSize.y );
+   float2 uv8        = float2( input.tex0.x + g_samplerPixelSize.x, input.tex0.y + g_samplerPixelSize.y );
+   //
+   // Sample water depths
+   float depthCenter    = tex2D( g_depthmapTexture, uvCenter );
+   float depthLeft      = tex2D( g_depthmapTexture, uvLeft );
+   float depthUp        = tex2D( g_depthmapTexture, uvUp );
+   float depthRight     = tex2D( g_depthmapTexture, uvRight );
+   float depthDown      = tex2D( g_depthmapTexture, uvDown );
+   float depth0         = tex2D( g_depthmapTexture, uv0 );
+   float depth2         = tex2D( g_depthmapTexture, uv2 );
+   float depth6         = tex2D( g_depthmapTexture, uv6 );
+   float depth8         = tex2D( g_depthmapTexture, uv8 );
+   //
+   // Sample terrain heights
+   float heightCenter   = sampleTerrainHeight( uvCenter );
+   float heightLeft     = sampleTerrainHeight( uvLeft );
+   float heightUp       = sampleTerrainHeight( uvUp );
+   float heightRight    = sampleTerrainHeight( uvRight );
+   float heightDown     = sampleTerrainHeight( uvDown );
+   float height0        = sampleTerrainHeight( uv0 );
+   float height2        = sampleTerrainHeight( uv2 );
+   float height6        = sampleTerrainHeight( uv6 );
+   float height8        = sampleTerrainHeight( uv8 );
+   //   
+   // Depth at center point
+   float    depth       = depthCenter;
+   //
+   // Sample velocity at center point
+   float2   velocity    = tex2D( g_velocitymapTexture, uvCenter );
+   
+   float hdSumCenter          = heightCenter + depthCenter;
+   
+   float deltaH      = 0;
+   float deltaV      = 0;
+
+   float2 velocityAdd = float2( 0, 0 );
+   
+   const float diffuseOnlyMaxDelta = 0.1;
+   
+   //left-center
+   {
+      float delta = ( (heightLeft + depthLeft) - hdSumCenter );
+      
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+      
+      delta = limitedClamp( delta, -depthCenter, depthLeft );
+
+      velocityAdd.x  += delta;
+      deltaH         += delta;
+   }
+
+   //right-center
+   {
+      float delta = ( (heightRight + depthRight) - hdSumCenter );
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depthRight );
+      
+      velocityAdd.x  -= delta;
+      deltaH         += delta;
+   }
+   
+   //up-center
+   {
+      float delta = ( (heightUp + depthUp) - hdSumCenter );
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depthUp );
+
+      velocityAdd.y  += delta;
+      deltaV         += delta;
+   }
+
+   //down-center
+   {
+      float delta = ( (heightDown + depthDown) - hdSumCenter );
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depthDown );
+      
+      velocityAdd.y  -= delta;
+      deltaV         += delta;
+   }
+  
+   
+   float deltaSlash		= 0;		//
+   float deltaBackSlash	= 0;		//
+   
+
+   //0-center
+   {
+      float delta = ( (height0 + depth0) - hdSumCenter );
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depth0 );
+      
+      velocityAdd.x += 0.5 * 0.707 * delta;
+      velocityAdd.y += 0.5 * 0.707 * delta;
+      deltaBackSlash += 0.707 * delta;
+   }
+
+   //8-center
+   {
+      float delta = ( (height8 + depth8) - hdSumCenter);
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depth8 );
+      
+      velocityAdd.x -= 0.5 * 0.707 * delta;
+      velocityAdd.y -= 0.5 * 0.707 * delta;
+      deltaBackSlash += 0.707 * delta;
+   }
+   
+   //2-center
+   {
+      float delta = ( (height2 + depth2) - hdSumCenter );
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depth2 );
+      
+      velocityAdd.x -= 0.5 * 0.707 * delta;
+      velocityAdd.y += 0.5 * 0.707 * delta;
+      deltaSlash += 0.707 * delta;
+   }
+
+   //6-center
+   {
+      float delta = ( (height6 + depth6) - hdSumCenter );
+
+      if( diffuseOnly ) delta = clamp( delta, -diffuseOnlyMaxDelta, diffuseOnlyMaxDelta );
+
+      delta = limitedClamp( delta, -depthCenter, depth6 );
+      
+      velocityAdd.x += 0.5 * 0.707 * delta;
+      velocityAdd.y -= 0.5 * 0.707 * delta;
+      deltaSlash += 0.707 * delta;
+   }
+
+
+   //
+   depth += g_diffusion * (deltaH + deltaV + deltaSlash + deltaBackSlash);
+
+   /*
+   // Waves
+   float p1 = tex2D(PerturbSampler, (uvCenter*5) + g_PerturbOffset).x + 0.5;
+   float p2 = tex2D(PerturbSampler, (uvCenter*5) + g_PerturbOffset*2).x + 0.5;
+   velocityAdd.x += (p1-1) * g_fWindShake;
+   velocityAdd.y += (p2-1) * g_fWindShake;
+   */
+   
+   float interferenceRemover = saturate( (depth - g_zeroVelocityBelowDepth) * 10000000 );
+
+   if( !diffuseOnly )
+   {
+      velocity += velocityAdd * g_acceleration;// * interferenceRemover;
+      
+      //Calculate minimum of all 8 surrounding depths and center depth
+      float4 minv4 = min( float4(depthLeft, depthRight, depthUp, depthDown), float4(depth0, depth2, depth6, depth8) );
+      float2 minv2 = min( minv4.xy, minv4.zw );
+      
+      float min9Depth = min( depthCenter, min( minv2.x, minv2.y ) );
+      
+      //Clamp velocity
+      velocity = RegulateVelocity( velocity, depth, min9Depth );
+      
+      //Kill velocity if no water to reduce interference
+      velocity *= interferenceRemover;
+   
+      float springMapAddition = tex2D( g_springmapTexture, uvCenter ).x * g_springBoost;
+ 
+      depth = max( 0.0, depth * g_absorption + g_precipitation + springMapAddition );
+   }
+
+   SimOutput output;
+   
+   output.depth      = depth;
+   output.velocity   = float4( velocity.x, velocity.y, 0, 0 ); //float4( velocity.x * 0.5 + 0.51, velocity.y * 0.5 + 0.49, 0, 0 );
+   //output.depth      = 0.1;
+   //output.velocity   = float4( 0.0, 0.0, 0, 0 );
+   
+   return output;
+}
+//
+SimOutput simulateDiffuseOnly( FixedVertexOutput input, uniform bool diffuseOnly )
+{
+   return simulateDiffuse( input, true );
+}
+//
+SimOutput simulateDiffuseAndTheRest( FixedVertexOutput input, uniform bool diffuseOnly )
+{
+   return simulateDiffuse( input, false );
+}
+//
+void CalcInfluence( in float2 inTextureUV, in float2 uvo, inout float depth, inout float2 avgvel, inout float2 vel )
+{
+   //float3 combined   = tex2D( CombinedSampler, inTextureUV + uvo * g_samplerPixelSize );
+   //
+   //float  cdepth     = combined.x;
+   //float2 cvel       = float2( combined.y, combined.z );
+
+   float2 uv         = inTextureUV + uvo * g_samplerPixelSize;
+   float cdepth      = tex2D( g_depthmapTexture, uv );
+   float2 cvel       = tex2D( g_velocitymapTexture, uv );
+   
+   float2 ndiff      = max( float2( 1, 1 ) - abs(uvo + cvel), float2(0, 0) );
+   float ik          = ndiff.x * ndiff.y;
+   
+   cdepth            = ik * cdepth;
+   //cvel              = cvel;
+   
+   //sumik             += ik;
+   depth             += cdepth;
+   vel               += cvel * cdepth;
+   avgvel            += cvel;
+}
+
+//
+SimOutput velocityPropagate( FixedVertexOutput input )
+{
+   // use this to disable this method
+   //return tex2D( CombinedSampler, In.TextureUV );
+
+   const float2 uvo0 = float2( -1, -1 );
+   const float2 uvo1 = float2( 0,  -1 );
+   const float2 uvo2 = float2( +1, -1 );
+   
+   const float2 uvo3 = float2( -1, 0 );
+   const float2 uvo4 = float2( 0 , 0 );
+   const float2 uvo5 = float2( +1, 0 );
+   
+   const float2 uvo6 = float2( -1, +1 );
+   const float2 uvo7 = float2( 0 , +1 );
+   const float2 uvo8 = float2( +1, +1 );
+
+   //float    sumik    = 0;
+   float    depth    = 0;
+   float    avgdepth = 0;
+   float2   velocity = float2( 0, 0 );
+   float2   avgvel   = float2( 0, 0 );
+
+   CalcInfluence( input.tex0, uvo0, depth, avgvel, velocity );
+   CalcInfluence( input.tex0, uvo1, depth, avgvel, velocity );
+   CalcInfluence( input.tex0, uvo2, depth, avgvel, velocity );
+
+   CalcInfluence( input.tex0, uvo3, depth, avgvel, velocity );
+   CalcInfluence( input.tex0, uvo4, depth, avgvel, velocity );
+   CalcInfluence( input.tex0, uvo5, depth, avgvel, velocity );
+
+   CalcInfluence( input.tex0, uvo6, depth, avgvel, velocity );
+   CalcInfluence( input.tex0, uvo7, depth, avgvel, velocity );
+   CalcInfluence( input.tex0, uvo8, depth, avgvel, velocity );
+   
+   //ovde uzmi stari velocity i uporedi ih!
+   
+   velocity /= depth + 0.000001f;
+   //velocity = avgvel / avgdepth;
+   
+   //depth /= sumik;
+
+   //float4 combined    = tex2D(CombinedSampler, input.tex0);
+   float height       = sampleTerrainHeight( input.tex0 );
+   
+   const float smoothk = 25; // bigger value means less smoothing!
+   velocity = (velocity * smoothk + avgvel) / (smoothk + 9);
+   
+   //float nowater =  saturate( sign( g_DepthDisplayMinMax.x - depth) + 1 );
+   //float wplush = lerp( height + depth, -combined.w, nowater );
+   
+   ////return float4( depth , velocity.x + 0.5, velocity.y + 0.5, depth + height );
+   ////return float4( depth, velocity.x, velocity.y, depth + height );
+   ////return float4( depth, velocity.x, velocity.y, combined.w );
+   //return float4( depth, velocity.x, velocity.y, wplush );
+
+   SimOutput output;
+   
+   output.depth      = depth;
+   output.velocity   = float4( velocity.x, velocity.y, 0, 0 );
+   //output.depth      = 0.1;
+   //output.velocity   = float4( 0.5, 0.5, 0, 0 );
+   
+   return output;
+}
+
+float2  g_simPixelSampleUV;
+
+float4 sampleSimPixel( FixedVertexOutput input ) : COLOR
+{
+ 
+  float height    = sampleTerrainHeight( g_simPixelSampleUV );
+  float depth     = tex2D( g_depthmapTexture, g_simPixelSampleUV );
+  float2 velocity = tex2D( g_velocitymapTexture, g_simPixelSampleUV );
+  
+  return float4( depth, velocity.x, velocity.y, height );
+  //return float4( 1.0, 2.0, 3.0, 4.0 );
+}

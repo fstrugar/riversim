@@ -1,0 +1,184 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{fbaa86cd-61f6-4360-89b6-c5ae813eda2e}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe</Extensions>
+    </Filter>
+    <Filter Include="DXUT">
+      <UniqueIdentifier>{2b5ae8a9-d8ac-4106-a781-b226b53676b3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="TiledBitmap">
+      <UniqueIdentifier>{578b4c12-8740-44c8-ba36-105f1fafe3f2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{c51f053b-93eb-430a-9594-338b393ea996}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="iniparser">
+      <UniqueIdentifier>{e3d48097-388c-4a78-a429-bb019d72c66f}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="DXUT\Optional\directx.ico">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="ws3DPreview.vsh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="ws3DPreviewCWSSetup.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="ws3DPreviewTerrain.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="ws3DPreviewWater.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsCascadedWaveSim.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsCommon.sh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsGPUDataTools.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsMisc.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsSimulation.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsSimulationDisplay.psh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="wsSkybox.sh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="!todo.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="DirectX9 Example.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="resource.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Core\DXUT.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Optional\DXUTcamera.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Core\DXUTenum.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Optional\DXUTgui.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Core\DXUTmisc.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Optional\DXUTres.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Optional\DXUTsettingsdlg.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="DXUT\Optional\SDKmisc.h">
+      <Filter>DXUT</Filter>
+    </ClInclude>
+    <ClInclude Include="TiledBitmap\TiledBitmap.h">
+      <Filter>TiledBitmap</Filter>
+    </ClInclude>
+    <ClInclude Include="iniparser\src\dictionary.h">
+      <Filter>iniparser</Filter>
+    </ClInclude>
+    <ClInclude Include="iniparser\src\iniparser.h">
+      <Filter>iniparser</Filter>
+    </ClInclude>
+    <ClInclude Include="iniparser\src\IniParser.hpp">
+      <Filter>iniparser</Filter>
+    </ClInclude>
+    <ClInclude Include="DxEventNotifier.h" />
+    <ClInclude Include="ws3DPreviewCamera.h" />
+    <ClInclude Include="ws3DPreviewLightMgr.h" />
+    <ClInclude Include="ws3DPreviewRenderer.h" />
+    <ClInclude Include="wsAABB.h" />
+    <ClInclude Include="wsCanvas.h" />
+    <ClInclude Include="wsCascadedWaveMapSim.h" />
+    <ClInclude Include="wsCommon.h" />
+    <ClInclude Include="wsExporter.h" />
+    <ClInclude Include="wsGPUDataTools.h" />
+    <ClInclude Include="wsMain.h" />
+    <ClInclude Include="wsQuadTree.h" />
+    <ClInclude Include="wsShader.h" />
+    <ClInclude Include="wsSimulator.h" />
+    <ClInclude Include="wsSkybox.h" />
+    <ClInclude Include="wsSpringsMgr.h" />
+    <ClInclude Include="wsTexSplattingMgr.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="DXUT\Core\DXUT.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Optional\DXUTcamera.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Core\DXUTenum.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Optional\DXUTgui.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Core\DXUTmisc.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Optional\DXUTres.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Optional\DXUTsettingsdlg.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="DXUT\Optional\SDKmisc.cpp">
+      <Filter>DXUT</Filter>
+    </ClCompile>
+    <ClCompile Include="TiledBitmap\TiledBitmap.cpp">
+      <Filter>TiledBitmap</Filter>
+    </ClCompile>
+    <ClCompile Include="iniparser\src\dictionary.c">
+      <Filter>iniparser</Filter>
+    </ClCompile>
+    <ClCompile Include="iniparser\src\iniparser.c">
+      <Filter>iniparser</Filter>
+    </ClCompile>
+    <ClCompile Include="iniparser\src\IniParser.cpp">
+      <Filter>iniparser</Filter>
+    </ClCompile>
+    <ClCompile Include="DirectX9Main.cpp" />
+    <ClCompile Include="DxEventNotifier.cpp" />
+    <ClCompile Include="shaders.cpp" />
+    <ClCompile Include="ws3DPreviewCamera.cpp" />
+    <ClCompile Include="ws3DPreviewLightMgr.cpp" />
+    <ClCompile Include="ws3DPreviewRenderer.cpp" />
+    <ClCompile Include="wsCanvas.cpp" />
+    <ClCompile Include="wsCascadedWaveMapSim.cpp" />
+    <ClCompile Include="wsCommon.cpp" />
+    <ClCompile Include="wsExporter.cpp" />
+    <ClCompile Include="wsGPUDataTools.cpp" />
+    <ClCompile Include="wsMain.cpp" />
+    <ClCompile Include="wsQuadTree.cpp" />
+    <ClCompile Include="wsShader.cpp" />
+    <ClCompile Include="wsSimulator.cpp" />
+    <ClCompile Include="wsSkybox.cpp" />
+    <ClCompile Include="wsSpringsMgr.cpp" />
+    <ClCompile Include="wsTexSplattingMgr.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuildStep Include="DirectX9 Example.manifest">
+      <Filter>Resource Files</Filter>
+    </CustomBuildStep>
+  </ItemGroup>
+</Project>

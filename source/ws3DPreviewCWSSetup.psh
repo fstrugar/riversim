@@ -1,0 +1,78 @@
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+float2         g_samplerPixelSize;
+
+// Output velocityMap for later use by CascadedWaveMapSim
+float4 velocityMap( DrawWaterInfoMapVertexOutput input ) : COLOR
+{
+   return float4( input.waterInfo.x + 0.5, input.waterInfo.y + 0.5, input.waterInfo.z, 1.0 );
+}
+
+float4 simpleBlurVelocities( float2 pixelSize, float2 uvCenter )
+{
+   float2 uv0        = uvCenter + float2( -pixelSize.x,     0 );
+   float2 uv1        = uvCenter + float2( 0,                -pixelSize.y );
+   float2 uv2        = uvCenter + float2( pixelSize.x,      0 );
+   float2 uv3        = uvCenter + float2( 0,                +pixelSize.y );
+
+   float4 vmc = tex2D( g_velocitymapTexture, uvCenter );
+   float4 vm0 = tex2D( g_velocitymapTexture, uv0 );
+   float4 vm1 = tex2D( g_velocitymapTexture, uv1 );
+   float4 vm2 = tex2D( g_velocitymapTexture, uv2 );
+   float4 vm3 = tex2D( g_velocitymapTexture, uv3 );
+   
+   vmc.xy = (vmc.xy * 4 + vm0.xy + vm1.xy + vm2.xy + vm3.xy) / 8.0;
+   vmc.w = saturate( (vmc.w + vm0.w + vm1.w + vm2.w + vm3.w) * 20.0 );
+   
+   return vmc;
+}
+
+// Used to blur velocities only using 'big' radius
+float4 velocityMapFilter0( FixedVertexOutput input ) : COLOR
+{
+   // try to blur as much as possible (use texture sampler's linear filter)
+   float4 retVal0 = simpleBlurVelocities( g_samplerPixelSize * 0.2, input.tex0 );
+   //float4 retVal1 = simpleBlurVelocities( g_samplerPixelSize * 0.3, input.tex0 );
+   ////float4 retVal2 = simpleBlurVelocities( g_samplerPixelSize * 0.6, input.tex0 );
+   //retVal0.xy = (retVal0.xy + retVal1.xy) / 2.0;
+   
+   return retVal0;
+}
+
+// Used to blur edges and calculate perturbance const and strengthen edge exclusion
+float4 velocityMapFilter1( FixedVertexOutput input ) : COLOR
+{
+   float2 pixelSize = g_samplerPixelSize * 1.0;
+   
+   float2 uvCenter   = input.tex0;
+   
+   // try to blur as much as possible (use texture sampler's linear filter)
+   float2 uv0        = uvCenter + float2( +pixelSize.x * 0.5,     -pixelSize.y * 1.5 );
+   float2 uv1        = uvCenter + float2( +pixelSize.x * 1.5,     +pixelSize.y * 0.5 );
+   float2 uv2        = uvCenter + float2( -pixelSize.x * 0.5,     +pixelSize.y * 1.5 );
+   float2 uv3        = uvCenter + float2( -pixelSize.x * 1.5,     -pixelSize.y * 0.5 );
+
+   float4 velocityMapCenter = tex2D( g_velocitymapTexture, uvCenter );
+   float4 vm0 = tex2D( g_velocitymapTexture, uv0 );
+   float4 vm1 = tex2D( g_velocitymapTexture, uv1 );
+   float4 vm2 = tex2D( g_velocitymapTexture, uv2 );
+   float4 vm3 = tex2D( g_velocitymapTexture, uv3 );
+
+   // outVal.w == edge exclusion used by CascadedWaveSim
+   // outVal.z == amount of perturbance (should also be calculated using depth - less depth more preturbance!)
+   float4 outVal = (velocityMapCenter * 2 + vm0 + vm1 + vm2 + vm3) / 6.0;
+   //outVal.w = 1.0 - saturate( (1.0 - outVal.w) * 1.5 );
+   outVal.w = saturate( (outVal.w) * 40.0 );
+
+   outVal.xy = (outVal.w * (outVal.xy - float2(0.5, 0.5))) + float2(0.5, 0.5);
+
+   //this was temporary
+   //outVal.z = length( outVal.xy - float2(0.5, 0.5) );
+   
+   return outVal;
+}

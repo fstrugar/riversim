@@ -1,0 +1,261 @@
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+
+#define PIXEL_SHADER
+
+#include "wsCommon.sh"
+
+
+float4 flatShading( PreviewVertexOutput input ) : COLOR
+{
+   //float4 color = float4( 1, 1, 1, 1 );
+   
+   //float h = tex2D( g_heightmapTexture, input.globalUV_cwmUV.xy ).x;
+   //float h = tex2Dlod( g_heightmapTexture, float4( input.globalUV_cwmUV.x, input.globalUV_cwmUV.y, 0, 0 ) ).x;
+   
+   //float4 color = float4( h, h, h, 1 );
+   
+   float3 lightDir = normalize( input.lightDir );
+   float3 eyeDir = normalize( input.eyeDir );
+   
+   float4 color = float4( CalculateLighting( float3(0, 0, 1), lightDir, eyeDir, 16, 0.0 ), 1.0 );
+   
+   // Add fog
+   // color = lerp( color, g_fogColor, input.normal3_fog1.w );
+ 
+   return color;    
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+/// DEBUGGING AND TESTING
+//
+//#define DEBUG_DISABLE_SPLAT_ALPHA_MODIFIER
+//#define DEBUG_DISABLE_NORMAL_MAPS
+//#define DEBUG_DISPLAY_ONLY_ONE_SPLATMAP
+//#define DEBUG_DISPLAY_ONLY_ONE_SPLATMAP_INDEX (7)
+//#define DEBUG_DISABLE_DETAIL_MAPS
+//
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Other settings
+static float c_detailMapTextureCoordModStrength  = 0.0005;
+static float c_detailMapNMModStrength            = 0.5;
+//
+////////////////////////////////////////////////////////////////////////////////
+
+float2      g_rasterSize;
+
+sampler     g_splatMapTexture;
+
+sampler     g_splatTileTextures0;
+sampler     g_splatTileTextures1;
+sampler     g_splatTileTextures2;
+sampler     g_splatTileTextures3;
+
+sampler     g_splatMatTileTextures0;
+sampler     g_splatMatTileTextures1;
+sampler     g_splatMatTileTextures2;
+sampler     g_splatMatTileTextures3;
+
+
+sampler     g_detailUVModTexture;
+sampler     g_detailNormalMapTexture;
+
+float       g_splatAlphaModAdd[4];
+float       g_splatAlphaModMul[4];
+
+float       g_splatSpecularPow[5];
+float       g_splatSpecularMul[5];
+
+// used to render only below or only above water
+float2      g_clipConsts;       // .x = clipOffset, .y = clipMul
+
+
+float4 SampleSplatAlphas( PreviewVertexOutput input )
+{
+   return tex2D(g_splatMapTexture, input.globalUV_cwmUV.xy);
+}
+
+float ModAlpha( int modIndex, float inSplatMapAlpha, float inSplatTextureAlpha )
+{
+#ifdef DEBUG_DISABLE_SPLAT_ALPHA_MODIFIER
+   return inSplatMapAlpha;
+#else
+   return saturate( (inSplatMapAlpha * inSplatTextureAlpha + g_splatAlphaModAdd[modIndex]) * g_splatAlphaModMul[modIndex] );
+#endif
+}
+
+float4 texSplatting( PreviewVertexOutput input ) : COLOR
+{
+/*   float4 color = float4( 1, 1, 1, 1 );
+   
+   float4 alphas = SampleSplatAlphas( input );
+   
+   color.xyz = float4( alphas.x, alphas.y, alphas.z, 1.0 );
+ 
+   return color;    
+   */
+   
+   clip( g_clipConsts.x + input.waterConsts.y * g_clipConsts.y );
+   
+   float2 baseTexUV   = ( input.globalUV_cwmUV.xy - float2( 0.5, 0.5 ) ) * g_rasterSize;
+   
+   const float tileTexUVScale = 0.05;
+   float2 tileTexUV     = baseTexUV * tileTexUVScale;
+
+   const float detailTexUVScale = 4.0;
+   float2 detailTexUV   = baseTexUV * detailTexUVScale;
+
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Sample splatmap
+   //
+   float4 splatMap = SampleSplatAlphas( input );
+   //splatMap[0] = 0.0;
+   //splatMap[1] = 0.0;
+   //splatMap[2] = 0.5;
+   splatMap[3] = 0.0;
+   //
+   float outAlpha = 1.0;
+   //
+   ////////////////////////////////////////////////////////////////////////////
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Sample and uncompress detail map normal   
+   //
+   float4 detailUVModRaw = tex2D( g_detailUVModTexture, detailTexUV );
+   float2 detailUVMod = float2( detailUVModRaw.w * 2.0 - 1.0, detailUVModRaw.x * 2.0 - 1.0 );
+   
+   float4 detailNormRaw = tex2D( g_detailNormalMapTexture, detailTexUV );
+   float3 detailNorm = UncompressDXT5_NM( detailNormRaw );
+   //float3 detailNorm = UncompressDXT5_NM( detailUVModRaw );
+   //detailNorm = float3( 0, 0, 1 );
+   //
+   ////////////////////////////////////////////////////////////////////////////
+   
+   ////////////////////////////////////////////////////////////////////////////
+   // Sample tile textures and morph
+   //
+   float2 tileTexCoords = tileTexUV;
+   //
+#ifndef DEBUG_DISABLE_DETAIL_MAPS
+   tileTexCoords.x += detailUVMod.x * c_detailMapTextureCoordModStrength;
+   tileTexCoords.y += detailUVMod.y * c_detailMapTextureCoordModStrength;
+   //tileTexCoords.x += detailNorm.x * c_detailMapTextureCoordModStrength;
+   //tileTexCoords.y += detailNorm.y * c_detailMapTextureCoordModStrength;
+#endif
+   //
+   float4 splat         = float4( 0, 0, 0, 0 );
+   float4 splatNormalMap = float4( 0, 0, 0, 0 );
+   //
+   float4 splatColors[5];
+   float4 splatNormalMaps[5]; // x and w will hold normal; .y and .z hold specularPow and specularMul
+   //
+   splatColors[0] = tex2D( g_splatTileTextures0, tileTexCoords );
+   splatColors[1] = tex2D( g_splatTileTextures1, tileTexCoords );
+   splatColors[2] = tex2D( g_splatTileTextures2, tileTexCoords );
+   splatColors[3] = tex2D( g_splatTileTextures3, tileTexCoords );
+   //
+   splatNormalMaps[0] = tex2D( g_splatMatTileTextures0, tileTexCoords );
+   splatNormalMaps[1] = tex2D( g_splatMatTileTextures1, tileTexCoords );
+   splatNormalMaps[2] = tex2D( g_splatMatTileTextures2, tileTexCoords );
+   splatNormalMaps[3] = tex2D( g_splatMatTileTextures3, tileTexCoords );
+   
+   {
+      splatColors[4] = 0;     //tex2D( g_splatTileTextures4, tileTexCoords );
+      splatNormalMaps[4] = 0; //tex2D( g_splatMatTileTextures4, tileTexCoords );
+      
+      for( int i = 0; i < 5; i++ )
+      {
+         splatNormalMaps[i].y = g_splatSpecularPow[i];
+         splatNormalMaps[i].z = g_splatSpecularMul[i];
+      }
+
+      splatMap.x = ModAlpha( 0, splatMap.x, splatColors[1].a );
+      splatMap.y = ModAlpha( 1, splatMap.y, splatColors[2].a );
+      splatMap.z = ModAlpha( 2, splatMap.z, splatColors[3].a );
+      splatMap.w = ModAlpha( 3, splatMap.w, splatColors[4].a );
+      
+      float blend[5];      
+      float4 oneMinusSplatMap = float4( 1, 1, 1, 1 ) - splatMap;
+      
+      blend[4] = splatMap.w;
+      
+      float acc = oneMinusSplatMap.w;
+      blend[3] = splatMap.z * acc;
+      
+      acc *= oneMinusSplatMap.z;
+      blend[2] = splatMap.y * acc;
+   
+      acc *= oneMinusSplatMap.y;
+      blend[1] = splatMap.x * acc;
+
+      acc *= oneMinusSplatMap.x;
+      blend[0] = 1 * acc;
+      
+      //float assertOne = blend0 + blend1 + blend2 + blend3 + blend4;
+      
+      //blend[0] = 1.0f;
+
+      for( int i = 0; i < 5; i++ )
+      {
+         splat          += blend[i] * splatColors[i];       //tex2D( g_splatTileTextures[i], tileTexCoords );
+         splatNormalMap  += blend[i] * splatNormalMaps[i];  //tex2D( g_splatNormalMapalMapTileTextures[i], tileTexCoords );
+      }
+   }
+
+/*
+#ifdef DEBUG_DISPLAY_ONLY_ONE_SPLATMAP
+   if( DEBUG_DISPLAY_ONLY_ONE_SPLATMAP_INDEX < 5 )
+   {
+      outAlpha       = 0.0;
+      splatColors[4] = tex2D( g_splatTileTextures4, tileTexCoords );
+      splatNormalMaps[4] = tex2D( g_splatMatTileTextures4, tileTexCoords );
+      splat          = splatColors[DEBUG_DISPLAY_ONLY_ONE_SPLATMAP_INDEX];    //tex2D( g_splatTileTextures[0], tileTexCoords );
+      splatNormalMap = splatNormalMaps[DEBUG_DISPLAY_ONLY_ONE_SPLATMAP_INDEX]; //tex2D( g_splatNormalMapalMapTileTextures[0], tileTexCoords );
+   }
+   else
+   {
+      outAlpha       = 1.0;
+      splat          = splatColors[DEBUG_DISPLAY_ONLY_ONE_SPLATMAP_INDEX-5];    //tex2D( g_splatTileTextures[0], tileTexCoords );
+      splatNormalMap = splatNormalMaps[DEBUG_DISPLAY_ONLY_ONE_SPLATMAP_INDEX-5]; //tex2D( g_splatNormalMapalMapTileTextures[0], tileTexCoords );
+   }
+#endif
+*/
+  
+   ////////////////////////////////////////////////////////////////////////////
+   
+   // Unpack normals (maybe it would be more correct to do this just after sampling for each splat layer, but it would be much slower)
+   float3 splatNormalMapUnpacked = UncompressDXT5_NM( splatNormalMap );
+   
+   // Blend tile texture and detail texture normals
+   // Should have some better way of calculating this....
+   float detailNormStrength   = c_detailMapNMModStrength;
+   float normStrength         = 1.0;
+   float3 normal = normalize( float3( detailNormStrength * detailNorm.x + normStrength * splatNormalMapUnpacked.x, detailNormStrength * detailNorm.y + normStrength * splatNormalMapUnpacked.y, splatNormalMapUnpacked.z ) );
+
+#ifdef DEBUG_DISABLE_DETAIL_MAPS   
+   normal = splatNormalMapUnpacked;
+#endif
+   
+   //splat = float4( 1, 1, 1, 1 );
+   
+   // Final color
+   float3 lightDir = normalize( input.lightDir );
+   float3 eyeDir = normalize( input.eyeDir );
+#ifndef DEBUG_DISABLE_NORMAL_MAPS
+   float4 color = float4( splat * CalculateLighting( normal, lightDir, eyeDir, splatNormalMap.y, splatNormalMap.z ), 1.0 );
+#else
+   float4 color = float4( splat * CalculateLighting( float3(0, 0, 1), lightDir, eyeDir, splatNormalMap.y, splatNormalMap.z ), 1.0 );
+#endif
+   
+   // Add fog
+   // color = lerp( color, g_fogColor, input.normal3_fog1.w );
+   
+   color.a = outAlpha;
+   
+   return color;
+}
+
